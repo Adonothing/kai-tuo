@@ -1,3 +1,24 @@
+doc
 html
-par
 sim
+音频文件
+# par 文件夹下
+db
+incremental_db
+output_files
+greybox_tmp
+ipcore
+simulation
+New Folder
+.qsys_edit
+*.qws
+*_description.txt
+*.sdc
+*.qip
+*.v
+*.tcl
+*_INFO.txt
+*.bak
+*.stp
+*.ddb
+*.map
