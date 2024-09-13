@@ -2,6 +2,8 @@ doc
 html
 sim
 音频文件
+*.zip
+*.bak
 # par 文件夹下
 db
 incremental_db
@@ -18,7 +20,8 @@ New Folder
 *.v
 *.tcl
 *_INFO.txt
-*.bak
 *.stp
 *.ddb
 *.map
+*.jic
+*.cof
