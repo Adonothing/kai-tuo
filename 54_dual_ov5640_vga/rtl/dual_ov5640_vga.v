@@ -1,0 +1,237 @@
+//****************************************Copyright (c)***********************************//
+//技术支持：www.openedv.com
+//淘宝店铺：http://openedv.taobao.com 
+//关注微信公众平台微信号："正点原子"，免费获取FPGA & STM32资料。
+//版权所有，盗版必究。
+//Copyright(C) 正点原子 2018-2028
+//All rights reserved	                               
+//----------------------------------------------------------------------------------------
+// File name:           ov5640_rgb565_1024x768_vga
+// Last modified Date:  2018/1/30 11:12:36
+// Last Version:        V1.1
+// Descriptions:        双目摄像头VGA显示
+//----------------------------------------------------------------------------------------
+// Created by:          正点原子
+// Created date:        2018/1/29 10:55:56
+// Version:             V1.0
+// Descriptions:        The original version
+//
+//----------------------------------------------------------------------------------------
+// Modified by:		    正点原子
+// Modified date:	    2018/1/30 11:12:36
+// Version:			    V1.1
+// Descriptions:	    双目摄像头采集图像在显示器上分左右两半进行显示
+//
+//----------------------------------------------------------------------------------------
+//****************************************************************************************//
+
+module dual_ov5640_vga(    
+    input                 sys_clk      ,  //系统时钟
+    input                 sys_rst_n    ,  //系统复位，低电平有效
+    
+    //摄像头接口0
+    input                 cam0_pclk    ,  //cmos 数据像素时钟
+    input                 cam0_vsync   ,  //cmos 场同步信号
+    input                 cam0_href    ,  //cmos 行同步信号
+    input        [7:0]    cam0_data    ,  //cmos 数据  
+    output                cam0_rst_n   ,  //cmos 复位信号，低电平有效
+    output                cam0_pwdn    ,  //cmos 电源休眠模式选择信号
+    output                cam0_scl     ,  //cmos SCCB_SCL线
+    inout                 cam0_sda     ,  //cmos SCCB_SDA线
+    
+    //摄像头接口1
+    input                 cam1_pclk    ,  //cmos 数据像素时钟
+    input                 cam1_vsync   ,  //cmos 场同步信号
+    input                 cam1_href    ,  //cmos 行同步信号
+    input        [7:0]    cam1_data    ,  //cmos 数据  
+    output                cam1_rst_n   ,  //cmos 复位信号，低电平有效
+    output                cam1_pwdn    ,  //cmos 电源休眠模式选择信号
+    output                cam1_scl     ,  //cmos SCCB_SCL线
+    inout                 cam1_sda     ,  //cmos SCCB_SDA线
+    
+    //SDRAM接口
+    output                sdram_clk    ,  //SDRAM 时钟
+    output                sdram_cke    ,  //SDRAM 时钟有效
+    output                sdram_cs_n   ,  //SDRAM 片选
+    output                sdram_ras_n  ,  //SDRAM 行有效
+    output                sdram_cas_n  ,  //SDRAM 列有效
+    output                sdram_we_n   ,  //SDRAM 写有效
+    output       [1:0]    sdram_ba     ,  //SDRAM Bank地址
+    output       [1:0]    sdram_dqm    ,  //SDRAM 数据掩码
+    output       [12:0]   sdram_addr   ,  //SDRAM 地址
+    inout        [15:0]   sdram_data   ,  //SDRAM 数据    
+    //VGA接口                           
+    output                vga_hs       ,  //行同步信号
+    output                vga_vs       ,  //场同步信号
+    output        [15:0]  vga_rgb         //红绿蓝三原色输出 
+    );
+
+//parameter define
+parameter  SLAVE_ADDR   = 7'h3c         ;  //OV5640的器件地址7'h3c
+parameter  BIT_CTRL     = 1'b1          ;  //OV5640的字节地址为16位  0:8位 1:16位
+parameter  CLK_FREQ     = 26'd65_000_000;  //i2c_dri模块的驱动时钟频率 65MHz
+parameter  I2C_FREQ     = 18'd250_000   ;  //I2C的SCL时钟频率,不超过400KHz
+parameter  CMOS_H_PIXEL = 24'd512       ;  //CMOS水平方向像素个数,用于设置SDRAM缓存大小
+parameter  CMOS_V_PIXEL = 24'd768       ;  //CMOS垂直方向像素个数,用于设置SDRAM缓存大小
+
+//wire define
+wire                  cmos0_frame_valid ;  //摄像头0数据有效信号
+wire                  cmos1_frame_valid ;  //摄像头1数据有效信号
+wire                  clk_100m          ;  //100mhz时钟,SDRAM操作时钟
+wire                  clk_100m_shift    ;  //100mhz时钟,SDRAM相位偏移时钟
+wire                  clk_65m           ;  //65mhz时钟,提供给IIC驱动时钟和vga驱动时钟
+wire                  locked            ;
+wire                  rst_n             ;
+  
+wire                  i2c_exec          ;  //I2C触发执行信号
+wire   [23:0]         i2c_data          ;  //I2C要配置的地址与数据(高8位地址,低8位数据)          
+wire                  i2c_done          ;  //I2C寄存器配置完成信号
+wire                  i2c_dri_clk       ;  //I2C操作时钟
+  
+wire   [15:0]         cmos0_frame_data  ;
+wire   [15:0]         cmos1_frame_data  ;
+                                        
+wire                  rd_en             ;  //sdram_ctrl模块读使能
+wire   [15:0]         rd_data           ;  //sdram_ctrl模块读数据
+  
+wire                  sdram_init_done   ;  //SDRAM初始化完成
+wire   [10:0]         pixel_xpos        ;
+wire   [12:0]         rd_h_pixel        ;
+
+//*****************************************************
+//**                    main code
+//*****************************************************
+
+//等待PLL模块稳定输出
+assign  rst_n   =  sys_rst_n & locked;
+
+//锁相环
+pll_clk u_pll_clk(
+    .areset             (~sys_rst_n),
+    .inclk0             (sys_clk),
+    .c0                 (clk_100m),
+    .c1                 (clk_100m_shift),
+    .c2                 (clk_65m),
+    .locked             (locked)
+    );
+  
+//摄像头0驱动   
+cmos_driver
+    #(
+        .CMOS_H_PIXEL      (CMOS_H_PIXEL),
+        .CMOS_V_PIXEL      (CMOS_V_PIXEL)
+     )   
+    u_cmos0_driver(
+    .clk                 (clk_65m),          //配置驱动时钟
+    .rst_n               (rst_n),            //复位信号
+    .cmos_start          (sdram_init_done),  //SDRAM初始化完成 cmos_start  
+                     
+    .cam_pclk            (cam0_pclk)  ,          
+    .cam_vsync           (cam0_vsync) ,         
+    .cam_href            (cam0_href)  ,        
+    .cam_data            (cam0_data)  , 
+      
+    .cmos_frame_vsync    ()    ,  
+    .cmos_frame_href     ()    , 
+    .cmos_frame_valid    (cmos0_frame_valid) , 
+    .cmos_frame_data     (cmos0_frame_data)  , 
+    .cam_scl             (cam0_scl)          , 
+    .cam_sda             (cam0_sda)          ,
+    
+    .cam_rst_n           (cam0_rst_n)        ,  //cmos 复位信号，低电平有效
+    .cam_pwdn            (cam0_pwdn)            //cmos 电源休眠模式选择信号        
+   ); 
+   
+//摄像头1驱动
+cmos_driver
+    #(
+        .CMOS_H_PIXEL      (CMOS_H_PIXEL),
+        .CMOS_V_PIXEL      (CMOS_V_PIXEL)
+     )   
+    u_cmos1_driver(
+    .clk                 (clk_65m),          //配置驱动时钟
+    .rst_n               (rst_n),            //复位信号
+    .cmos_start          (sdram_init_done),  //SDRAM初始化完成 cmos_start
+                        
+    .cam_pclk            (cam1_pclk)  ,          
+    .cam_vsync           (cam1_vsync) ,         
+    .cam_href            (cam1_href)  ,        
+    .cam_data            (cam1_data)  ,       
+    
+    
+    .cmos_frame_vsync    ()  ,  
+    .cmos_frame_href     ()  , 
+    .cmos_frame_valid    (cmos1_frame_valid) , 
+    .cmos_frame_data     (cmos1_frame_data)  , 
+    .cam_scl             (cam1_scl)          , 
+    .cam_sda             (cam1_sda)          ,
+    
+    .cam_rst_n           (cam1_rst_n)        ,  //cmos 复位信号，低电平有效
+    .cam_pwdn            (cam1_pwdn)            //cmos 电源休眠模式选择信号
+   );
+   
+//SDRAM 控制器顶层模块,封装成FIFO接口
+//SDRAM 控制器地址组成: {bank_addr[1:0],row_addr[12:0],col_addr[8:0]}
+sdram_top u_sdram_top(
+    .ref_clk            (clk_100m),                   //sdram 控制器参考时钟
+    .out_clk            (clk_100m_shift),             //用于输出的相位偏移时钟
+    .rst_n              (rst_n),                      //系统复位
+                                                        
+    //用户写端口0                                        
+    .wr_clk0            (cam0_pclk),                  //写端口FIFO0: 写时钟
+    .wr_en0             (cmos0_frame_valid),          //写端口FIFO0: 写使能
+    .wr_data0           (cmos0_frame_data),           //写端口FIFO0: 写数据
+    //.wr_data0
+    .wr_min_addr        (24'd0),                      //写SDRAM的起始地址
+    .wr_max_addr        (CMOS_H_PIXEL*CMOS_V_PIXEL),  //写SDRAM的结束地址
+    .wr_len             (10'd512),                    //写SDRAM时的数据突发长度
+    .wr_load            (~rst_n),                     //写端口复位: 复位写地址,清空写FIFO
+     
+    //用户写端口1                                      
+    .wr_clk1            (cam1_pclk),                 //写端口FIFO1: 写时钟
+    .wr_en1             (cmos1_frame_valid),         //写端口FIFO1: 写使能
+    .wr_data1           (cmos1_frame_data),          //写端口FIFO1: 写数据
+   
+    //用户读端口  
+	.rd_clk             (clk_65m),                   //读端口FIFO1: 读时钟
+    .rd_en              (rd_en),                     //读端口FIFO: 读使能
+    .rd_data            (rd_data),                   //读端口FIFO: 读数据
+    .rd_h_pixel         (CMOS_H_PIXEL),
+    .rd_min_addr        (24'd0),                      //读SDRAM的起始地址
+    .rd_max_addr        (CMOS_H_PIXEL*CMOS_V_PIXEL),  //读SDRAM的结束地址
+    .rd_len             (10'd512),                    //从SDRAM中读数据时的突发长度
+    .rd_load            (~rst_n),                     //读端口复位: 复位读地址,清空读FIFO
+     
+    //用户控制端口                                
+    .sdram_read_valid   (1'b1),                       //SDRAM 读使能
+    .sdram_pingpang_en  (1'b1),                       //SDRAM 乒乓操作使能
+    .sdram_init_done    (sdram_init_done),            //SDRAM 初始化完成标志
+                                                
+    //SDRAM 芯片接口                                
+    .sdram_clk          (sdram_clk),                  //SDRAM 芯片时钟
+    .sdram_cke          (sdram_cke),                  //SDRAM 时钟有效
+    .sdram_cs_n         (sdram_cs_n),                 //SDRAM 片选
+    .sdram_ras_n        (sdram_ras_n),                //SDRAM 行有效
+    .sdram_cas_n        (sdram_cas_n),                //SDRAM 列有效
+    .sdram_we_n         (sdram_we_n),                 //SDRAM 写有效
+    .sdram_ba           (sdram_ba),                   //SDRAM Bank地址
+    .sdram_addr         (sdram_addr),                 //SDRAM 行/列地址
+    .sdram_data         (sdram_data),                 //SDRAM 数据
+    .sdram_dqm          (sdram_dqm)                   //SDRAM 数据掩码
+    );
+
+//VGA驱动模块
+vga_driver u_vga_driver(
+    .vga_clk            (clk_65m),    
+    .sys_rst_n          (rst_n)  ,    
+    
+    .vga_hs             (vga_hs) ,       
+    .vga_vs             (vga_vs) ,       
+    .vga_rgb            (vga_rgb),      
+        
+    .pixel_data         (rd_data), 
+    .data_req           (rd_en)  ,
+    .pixel_xpos         (pixel_xpos),  
+    .pixel_ypos         ()
+    ); 
+endmodule 

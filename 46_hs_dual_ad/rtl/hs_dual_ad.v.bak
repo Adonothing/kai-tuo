@@ -1,0 +1,77 @@
+//****************************************Copyright (c)***********************************//
+//技术支持：www.openedv.com
+//淘宝店铺：http://openedv.taobao.com 
+//关注微信公众平台微信号："正点原子"，免费获取FPGA & STM32资料。
+//版权所有，盗版必究。
+//Copyright(C) 正点原子 2018-2028
+//All rights reserved                                  
+//----------------------------------------------------------------------------------------
+// File name:           hs_dual_ad
+// Last modified Date:  2018/1/30 11:12:36
+// Last Version:        V1.1
+// Descriptions:        双路模数转换模块
+//----------------------------------------------------------------------------------------
+// Created by:          正点原子
+// Created date:        2018/1/29 10:55:56
+// Version:             V1.0
+// Descriptions:        The original version
+//
+//----------------------------------------------------------------------------------------
+//****************************************************************************************//
+
+module hs_dual_ad(
+    input                 sys_clk     ,  
+    input                 sys_rst_n   ,
+    //AD0
+    input     [9:0]       ad0_data     ,  //AD0数据
+    input                 ad0_otr      ,   //输入电压超过量程标志
+    output                ad0_clk      ,   //AD0(AD9280)采样时钟
+    output                ad0_oe       ,
+    //AD1
+    input     [9:0]       ad1_data     ,  //AD0数据
+    input                 ad1_otr      ,  //输入电压超过量程标志
+    output                ad1_clk      ,  //AD1(AD9280)采样时钟  
+    output                ad1_oe       
+    );
+    
+ //*****************************************************
+//**                    main code
+//*****************************************************   
+//  ad0_oe=0,正常模式；ad0_oe=1,高阻
+wire clk_out1;
+wire clk_out2;
+assign ad0_oe =  1'b0;
+assign ad1_oe =  1'b0;
+assign  ad0_clk = ~clk_out1;
+assign  ad1_clk = ~clk_out2;
+//产生采样时钟，这里为25M
+//always @(posedge sys_clk or negedge sys_rst_n) begin
+//  if(sys_rst_n == 1'b0)begin
+//       ad0_clk <= 1'b0;
+//       ad1_clk <= 1'b0;
+//  end
+//else begin
+//    ad0_clk <= ~ad0_clk;
+//    ad1_clk <= ~ad1_clk; 
+//end    
+
+//end  
+clk_wiz_0 instance_name
+   (
+    // Clock out ports
+    .clk_out1(clk_out1),     // output clk_out1
+    // Status and control signals
+    .clk_out2(clk_out2),     // output clk_out2
+    .reset(1'b0), // input reset
+    .locked(locked),       // output locked
+   // Clock in ports
+    .clk_in1(sys_clk));      // input clk_in1
+    
+ila_0 your_instance_name (
+	.clk(clk_out1), // input wire clk
+	.probe0(ad1_otr), // input wire [0:0]  probe0  
+	.probe1(ad0_data), // input wire [9:0]  probe1
+	.probe2(ad1_oe), // input wire [0:0]  probe0  
+	.probe3(ad1_data) // input wire [9:0]  probe1
+);
+endmodule
